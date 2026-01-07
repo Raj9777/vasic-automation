@@ -1,14 +1,14 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from playwright.async_api import async_playwright
 import re
+import requests
+from bs4 import BeautifulSoup
 from typing import List
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Allow Frontend to talk to Backend (CORS Fix)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,81 +34,74 @@ def read_root():
     return {"message": "Vasic Automation Engine is Running 🚀"}
 
 @app.post("/scrape", response_model=ScrapeResponse)
-async def scrape_emails(request: ScrapeRequest):
+def scrape_emails(request: ScrapeRequest):
     url = request.url
     if not url.startswith("http"):
         url = "https://" + url
         
     print(f"🔍 Starting scrape for: {url}")
-    
     found_leads = []
     
+    # Fake browser headers to avoid getting blocked
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
     try:
-        async with async_playwright() as p:
-            # Launch browser
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            
+        # 1. Scrape Homepage
+        response = requests.get(url, headers=headers, timeout=10)
+        content = response.text
+        soup = BeautifulSoup(content, 'html.parser')
+        
+        # 2. Find internal links (Contact, About)
+        links = set()
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if any(x in href.lower() for x in ['about', 'contact', 'team']):
+                if href.startswith('http'):
+                    links.add(href)
+                elif href.startswith('/'):
+                    links.add(url.rstrip('/') + href)
+        
+        # Scrape sub-pages
+        for link in list(links)[:2]:
             try:
-                # 1. Scrape Homepage
-                print("   -> Loading Homepage...")
-                await page.goto(url, timeout=30000)
-                content = await page.content()
-                
-                # 2. Try to find "About" or "Contact" page
-                # This makes us look like a human browsing
-                links = await page.evaluate("""
-                    () => Array.from(document.querySelectorAll('a')).map(a => a.href)
-                """)
-                about_pages = [link for link in links if any(x in link.lower() for x in ['about', 'contact', 'team', 'people'])]
-                
-                # Scrape specific pages if found (limit to first 2 to save time)
-                # Remove duplicates and limit
-                unique_pages = list(set(about_pages))[:2]
-                
-                for sub_page in unique_pages:
-                    try:
-                        print(f"   -> Checking sub-page: {sub_page}")
-                        await page.goto(sub_page, timeout=15000)
-                        content += await page.content()
-                    except:
-                        continue
+                print(f"   -> Checking: {link}")
+                res = requests.get(link, headers=headers, timeout=5)
+                content += res.text
+            except:
+                continue
 
-                # 3. Extraction Logic
-                email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-                raw_emails = set(re.findall(email_pattern, content))
+        # 3. Extract Emails
+        email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+        raw_emails = set(re.findall(email_pattern, content))
+        
+        for email in raw_emails:
+            # Filter junk
+            if any(x in email for x in ['.png', '.jpg', '.gif', 'wix', 'sentry', 'example', 'domain']):
+                continue
                 
-                for email in raw_emails:
-                    # Filter junk
-                    if any(x in email for x in ['.png', '.jpg', '.gif', 'wix', 'sentry', 'example', 'domain', 'email']):
-                        continue
-                        
-                    # 4. "High Value" Detection
-                    confidence = "Generic"
-                    lower_email = email.lower()
-                    
-                    if any(role in lower_email for role in ['ceo', 'founder', 'owner', 'director', 'marketing', 'sales', 'head']):
-                        confidence = "🔥 HIGH VALUE (Decision Maker)"
-                    elif any(role in lower_email for role in ['info', 'contact', 'support', 'hello', 'admin', 'office']):
-                        confidence = "Team Inbox"
-                    else:
-                        confidence = "Employee (Personal)"
-                        
-                    found_leads.append({
-                        "email": email,
-                        "source": "Website Scrape",
-                        "confidence": confidence
-                    })
-                        
-            except Exception as e:
-                print(f"Error accessing page: {e}")
-            finally:
-                await browser.close()
+            # 4. Intelligence
+            confidence = "Generic"
+            lower = email.lower()
+            if any(role in lower for role in ['ceo', 'founder', 'owner', 'director', 'marketing']):
+                confidence = "🔥 HIGH VALUE"
+            elif any(role in lower for role in ['info', 'contact', 'support']):
+                confidence = "Team Inbox"
+            else:
+                confidence = "Employee"
                 
+            found_leads.append({
+                "email": email,
+                "source": "Website Scrape",
+                "confidence": confidence
+            })
+            
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error: {e}")
+        # Don't crash, just return empty list if failed
+        pass
 
-    # Sort leads: High Value first
     found_leads.sort(key=lambda x: 0 if "HIGH" in x['confidence'] else 1)
 
     return {
