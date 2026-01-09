@@ -5,118 +5,111 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from bs4 import BeautifulSoup
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
 
-# --- APP INITIALIZATION ---
 app = FastAPI()
 
-# Enable CORS (Allows your Next.js frontend to talk to this Python backend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, you can restrict this to your Vercel URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- CONFIGURATION ---
-# Load keys from Environment Variables (Set these in Render Dashboard)
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CX = os.getenv("GOOGLE_CX")
 
-# Data Model for the Request
 class DomainRequest(BaseModel):
     domain: str
 
-# Helper: Regex to find emails in any text
+# --- ROBUST HEADERS (The Disguise) ---
+# This makes your requests look like a real Chrome browser
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Connection": "keep-alive",
+}
+
 def extract_emails_from_text(text):
-    # This pattern finds standard emails (e.g., name@company.com)
+    # Improved Regex to catch more formats
     return list(set(re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text, re.IGNORECASE)))
 
-# --- 1. FAST SCAN (Scrapes the Website directly) ---
+# --- 1. FAST SCAN (With Anti-Blocking Headers) ---
 @app.post("/scan-website")
 def scan_website(request: DomainRequest):
-    # Ensure URL has schema
-    url = f"https://{request.domain}" if not request.domain.startswith("http") else request.domain
+    # Ensure URL is clean
+    domain = request.domain.replace("https://", "").replace("http://", "").strip("/")
+    url = f"https://{domain}"
     
     try:
-        # 1. Try to get the website HTML
-        response = requests.get(url, timeout=10)
-        soup = BeautifulSoup(response.text, "html.parser")
+        # USE HEADERS HERE
+        response = requests.get(url, headers=HEADERS, timeout=10)
         
-        # 2. Extract text and find emails
+        # Check if we were blocked (403/401)
+        if response.status_code in [403, 401]:
+             return {"status": "error", "message": "Website blocked our scanner (Security Check). Try Deep Search."}
+
+        soup = BeautifulSoup(response.text, "html.parser")
         page_text = soup.get_text()
         emails = extract_emails_from_text(page_text)
         
         return {
             "status": "success",
             "source": "Website Scan",
-            "emails": emails[:10],  # Return top 10
+            "emails": emails[:10],
             "meta_title": soup.title.string if soup.title else "No Title Found"
         }
     except Exception as e:
-        return {"status": "error", "message": f"Website scan failed: {str(e)}"}
+        return {"status": "error", "message": f"Scan failed: {str(e)}"}
 
-# --- 2. DEEP SEARCH (Google Custom Search API) ---
+# --- 2. DEEP SEARCH (Google API) ---
 @app.post("/deep-search")
 def deep_search(request: DomainRequest):
-    # Safety Check: Are keys present?
     if not GOOGLE_API_KEY or not GOOGLE_CX:
         raise HTTPException(status_code=500, detail="Server config error: Missing Google API Keys")
 
-    # STRATEGY: BROAD SEARCH
-    # We search for the domain + keywords that usually appear near emails.
-    query = f'"{request.domain}" (email OR "contact" OR "mail to") (CEO OR Founder OR Owner OR Director)'
+    # Strategy: Broad Search
+    query = f'"{request.domain}" (email OR "contact" OR "mail to")'
     
     api_url = "https://www.googleapis.com/customsearch/v1"
     params = {
         "key": GOOGLE_API_KEY,
         "cx": GOOGLE_CX,
         "q": query,
-        "num": 10  # Max results per page (efficient use of quota)
+        "num": 10
     }
 
     try:
-        # 1. Call Google API
         response = requests.get(api_url, params=params)
         data = response.json()
 
-        # 2. Check for Google Errors (Quota etc.)
         if "error" in data:
-            print("Google API Error:", data["error"])
-            return {"status": "error", "message": "Search quota exceeded or API error."}
+            return {"status": "error", "message": "Google Quota Exceeded or Error."}
 
         found_emails = []
         snippets = []
 
-        # 3. Parse Results
         if "items" in data:
             for item in data["items"]:
                 snippet = item.get("snippet", "")
                 title = item.get("title", "")
                 link = item.get("link", "")
                 
-                # Combine title and snippet to search for emails
                 full_text = f"{title} {snippet}"
-                
-                # Extract ALL emails found in the text
                 extracted = extract_emails_from_text(full_text)
                 
-                # CLEANUP: Filter out obvious junk
-                clean_emails = []
+                # Clean and Add
                 for email in extracted:
-                    email_lower = email.lower()
-                    # Filter out common garbage emails
-                    if "noreply" not in email_lower and "example.com" not in email_lower:
-                        clean_emails.append(email)
+                    if request.domain in email.lower() or "gmail" in email.lower():
+                        found_emails.append(email)
                 
-                found_emails.extend(clean_emails)
                 snippets.append({"title": title, "link": link})
 
         return {
             "status": "success",
             "source": "Google Deep Search",
-            "emails": list(set(found_emails)), # Remove duplicates
+            "emails": list(set(found_emails)),
             "related_links": snippets
         }
 
