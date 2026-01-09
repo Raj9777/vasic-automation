@@ -1,134 +1,105 @@
+import os
+import requests
+import re
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import re
-import requests
 from bs4 import BeautifulSoup
-from typing import List
-import urllib.parse
-import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
+from typing import List, Optional
 
 app = FastAPI()
 
+# Enable CORS for Next.js Frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # In production, change this to your Vercel URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-class ScrapeRequest(BaseModel):
-    url: str
+# --- CONFIGURATION ---
+# Load keys from Environment Variables (Set these in Render Dashboard)
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GOOGLE_CX = os.getenv("GOOGLE_CX")
 
-class EmailResult(BaseModel):
-    email: str
-    source: str
-    confidence: str
+class DomainRequest(BaseModel):
+    domain: str
 
-class ScrapeResponse(BaseModel):
-    leads: List[EmailResult]
-    status: str
+# Helper: Simple Email Regex
+def extract_emails_from_text(text):
+    return list(set(re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text)))
 
-@app.get("/")
-def read_root():
-    return {"message": "Vasic Automation Engine is Running 🚀"}
-
-# --- ORIGINAL SCRAPER (FAST) ---
-@app.post("/scrape", response_model=ScrapeResponse)
-def scrape_emails(request: ScrapeRequest):
-    url = request.url
-    if not url.startswith("http"):
-        url = "https://" + url
-    
-    # ... (Keep existing scraper logic if you want, or I can paste full file) ...
-    # For brevity, I'll paste the full combined file below to ensure no errors.
-    
-    print(f"🔍 Fast Scrape: {url}")
-    found_leads = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-    
+# --- 1. FAST SCAN (Scrapes the Website directly) ---
+@app.post("/scan-website")
+def scan_website(request: DomainRequest):
+    url = f"https://{request.domain}" if not request.domain.startswith("http") else request.domain
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        content = response.text
+        response = requests.get(url, timeout=10)
+        soup = BeautifulSoup(response.text, "html.parser")
         
-        email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-        raw_emails = set(re.findall(email_pattern, content))
+        # Extract text and find emails
+        page_text = soup.get_text()
+        emails = extract_emails_from_text(page_text)
         
-        for email in raw_emails:
-            if any(x in email for x in ['.png', '.jpg', 'wix', 'sentry', 'example']): continue
-            
-            confidence = "Generic"
-            if any(r in email.lower() for r in ['ceo', 'founder', 'owner']): confidence = "🔥 HIGH VALUE"
-            elif any(r in email.lower() for r in ['info', 'contact']): confidence = "Team Inbox"
-            else: confidence = "Employee"
+        return {
+            "status": "success",
+            "source": "Website Scan",
+            "emails": emails[:5],  # Limit to top 5
+            "meta_title": soup.title.string if soup.title else "No Title Found"
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# --- 2. DEEP SEARCH (Google API Implementation) ---
+@app.post("/deep-search")
+def deep_search(request: DomainRequest):
+    if not GOOGLE_API_KEY or not GOOGLE_CX:
+        raise HTTPException(status_code=500, detail="Server config error: Missing Google API Keys")
+
+    # Strategy: Search for the domain + keywords for decision makers
+    query = f'"{request.domain}" "email" (CEO OR Founder OR Owner)'
+    
+    api_url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "key": GOOGLE_API_KEY,
+        "cx": GOOGLE_CX,
+        "q": query,
+        "num": 5  # Fetch top 5 results (Save quota)
+    }
+
+    try:
+        response = requests.get(api_url, params=params)
+        data = response.json()
+
+        # Handle API Errors (e.g., Quota exceeded)
+        if "error" in data:
+            print("Google API Error:", data["error"])
+            return {"status": "error", "message": "Search quota exceeded or API error."}
+
+        found_emails = []
+        snippets = []
+
+        # Parse Google Results
+        if "items" in data:
+            for item in data["items"]:
+                snippet = item.get("snippet", "")
+                title = item.get("title", "")
+                link = item.get("link", "")
                 
-            found_leads.append({"email": email, "source": "Website Direct", "confidence": confidence})
-            
-    except Exception:
-        pass
-
-    found_leads.sort(key=lambda x: 0 if "HIGH" in x['confidence'] else 1)
-    return {"leads": found_leads, "status": "success" if found_leads else "no_leads"}
-
-
-# --- NEW DEEP SEARCH (INTELLIGENT) ---
-@app.post("/deep-search", response_model=ScrapeResponse)
-def deep_search(request: ScrapeRequest):
-    company_url = request.url
-    # Extract clean domain (e.g., "tesla.com" from "https://www.tesla.com")
-    domain = company_url.replace("https://", "").replace("http://", "").replace("www.", "").split('/')[0]
-    company_name = domain.split('.')[0] # Rough guess of name
-    
-    print(f"🕵️ Deep Search for: {company_name} ({domain})")
-    
-    found_leads = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    
-    # Google Dorks to find emails
-    # 1. Search for "CEO email" directly
-    # 2. Search LinkedIn profiles with email in bio
-    queries = [
-        f'site:linkedin.com/in/ "{company_name}" "email" "gmail.com"',
-        f'"{domain}" "email" "contact" filetype:pdf',
-        f'site:rocketreach.co "{company_name}"',
-        f'site:{domain} "email" "contact"'
-    ]
-    
-    for query in queries:
-        try:
-            google_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
-            res = requests.get(google_url, headers=headers, timeout=5)
-            
-            # Extract emails from search results description
-            email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-            new_emails = set(re.findall(email_pattern, res.text))
-            
-            for email in new_emails:
-                if any(x in email for x in ['google', 'rating', 'search', 'png', 'jpg']): continue
+                # Combine text to search for emails
+                full_text = f"{title} {snippet}"
+                extracted = extract_emails_from_text(full_text)
+                found_emails.extend(extracted)
                 
-                # Check if it matches company domain OR is a personal executive email
-                if domain in email or "gmail.com" in email:
-                    confidence = "🌍 Deep Web Found"
-                    if "gmail" in email: confidence = "Personal (Likely Executive)"
-                    
-                    found_leads.append({
-                        "email": email,
-                        "source": "Google Intelligence",
-                        "confidence": confidence
-                    })
-        except:
-            continue
-            
-    # Remove duplicates
-    unique_leads = []
-    seen = set()
-    for lead in found_leads:
-        if lead['email'] not in seen:
-            unique_leads.append(lead)
-            seen.add(lead['email'])
+                snippets.append({"title": title, "link": link})
 
-    return {"leads": unique_leads, "status": "success"}
+        return {
+            "status": "success",
+            "source": "Google Deep Search",
+            "emails": list(set(found_emails)),
+            "related_links": snippets
+        }
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
