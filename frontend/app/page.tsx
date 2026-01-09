@@ -1,3 +1,5 @@
+'use client';
+
 import { useState } from 'react';
 
 export default function Home() {
@@ -22,7 +24,7 @@ export default function Home() {
       const res = await fetch(`${BACKEND_URL}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ domain }),
+        body: JSON.stringify({ domain: domain }),
       });
 
       const data = await res.json();
