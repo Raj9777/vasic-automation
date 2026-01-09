@@ -1,108 +1,140 @@
-"use client";
 import { useState } from 'react';
-import axios from 'axios';
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState('single');
-  const [url, setUrl] = useState('');
-  const [leads, setLeads] = useState([]);
+  const [domain, setDomain] = useState('');
+  const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+  const [activeTab, setActiveTab] = useState('fast'); // 'fast' or 'deep'
 
-  const handleScrape = async (endpoint) => {
-    if (!url) return;
+  const BACKEND_URL = "https://vasic-backend.onrender.com"; // Your Live Backend
+
+  const handleSearch = async () => {
+    if (!domain) return;
     setLoading(true);
-    setStatus(endpoint === 'deep-search' ? 'Performing Deep Intelligence Search (Google/LinkedIn)...' : 'Scanning website...');
-    setLeads([]);
+    setError('');
+    setResults(null);
+
+    // Choose endpoint based on tab
+    const endpoint = activeTab === 'deep' ? '/deep-search' : '/scan-website';
 
     try {
-      // Use the correct endpoint based on button click
-      const apiPath = endpoint === 'deep-search' ? '/deep-search' : '/scrape';
-      const response = await axios.post(`https://vasic-backend.onrender.com${apiPath}`, { url });
-      
-      setLeads(response.data.leads);
-      if (response.data.leads.length > 0) {
-        setStatus(`Success! Found ${response.data.leads.length} leads.`);
+      const res = await fetch(`${BACKEND_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain }),
+      });
+
+      const data = await res.json();
+
+      if (data.status === 'success') {
+        setResults(data);
       } else {
-        setStatus('No emails found.');
+        setError(data.message || 'Scan failed.');
       }
-    } catch (error) {
-      setStatus('Error: Scan failed.');
+    } catch (err) {
+      setError('Network error. Is the backend running?');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center p-8 font-sans">
-      <h1 className="text-5xl font-extrabold mb-2 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
-        Vasic Automation
-      </h1>
-      <p className="mb-8 text-gray-400 text-lg">AI-Powered Decision Maker Verification</p>
+    <div className="min-h-screen bg-gray-50 p-8 font-sans">
+      <div className="max-w-2xl mx-auto bg-white p-6 rounded-xl shadow-lg">
+        <h1 className="text-2xl font-bold text-gray-800 mb-2">Vasic Automation 🚀</h1>
+        <p className="text-gray-500 mb-6">Find decision maker emails instantly.</p>
 
-      {/* TABS */}
-      <div className="flex space-x-2 mb-8 bg-gray-800 p-1 rounded-lg">
-        <button onClick={() => setActiveTab('single')} className={`px-4 py-2 rounded-md font-bold transition ${activeTab === 'single' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}>
-          Fast Scan (Free)
-        </button>
-        <button onClick={() => setActiveTab('deep')} className={`px-4 py-2 rounded-md font-bold transition ${activeTab === 'deep' ? 'bg-indigo-600 text-white shadow-lg border border-indigo-400' : 'text-gray-400 hover:text-white'}`}>
-          Deep Search (Beta)
-        </button>
-        <button onClick={() => setActiveTab('bulk')} className={`px-4 py-2 rounded-md font-bold transition flex items-center ${activeTab === 'bulk' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}`}>
-          Bulk Scan <span className="ml-2 text-xs bg-yellow-500 text-black px-1 rounded">PRO</span>
-        </button>
-      </div>
+        {/* --- TABS --- */}
+        <div className="flex space-x-4 mb-6 border-b">
+          <button 
+            onClick={() => setActiveTab('fast')}
+            className={`pb-2 px-4 ${activeTab === 'fast' ? 'border-b-2 border-blue-600 text-blue-600 font-bold' : 'text-gray-500'}`}
+          >
+            ⚡ Fast Scan (Free)
+          </button>
+          <button 
+            onClick={() => setActiveTab('deep')}
+            className={`pb-2 px-4 ${activeTab === 'deep' ? 'border-b-2 border-purple-600 text-purple-600 font-bold' : 'text-gray-500'}`}
+          >
+            🔍 Deep Search (Pro)
+          </button>
+        </div>
 
-      {/* SINGLE & DEEP SEARCH SHARE SAME UI */}
-      {(activeTab === 'single' || activeTab === 'deep') && (
-        <div className="w-full max-w-2xl bg-gray-800 p-8 rounded-2xl shadow-2xl border border-gray-700">
-          <label className="block text-sm font-bold mb-3 text-gray-300">Target Company URL</label>
-          <div className="flex space-x-2 mb-6">
-            <input
-              type="text"
-              className="flex-1 p-4 rounded-xl bg-gray-700 border border-gray-600 focus:outline-none focus:border-blue-500 text-lg"
-              placeholder="example.com"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-            />
-            <button
-              onClick={() => handleScrape(activeTab === 'deep' ? 'deep-search' : 'scrape')}
-              disabled={loading}
-              className={`px-8 rounded-xl font-bold text-lg transition ${
-                loading ? 'bg-gray-600 cursor-not-allowed' : activeTab === 'deep' ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-blue-600 hover:bg-blue-500'
-              }`}
-            >
-              {loading ? 'Thinking...' : activeTab === 'deep' ? 'Deep Search' : 'Scan'}
-            </button>
+        {/* --- INPUT --- */}
+        <div className="flex gap-2 mb-6">
+          <input
+            type="text"
+            placeholder="e.g. tesla.com"
+            className="flex-1 border p-3 rounded-lg focus:outline-none focus:ring-2 ring-blue-500"
+            value={domain}
+            onChange={(e) => setDomain(e.target.value)}
+          />
+          <button
+            onClick={handleSearch}
+            disabled={loading}
+            className={`px-6 py-3 rounded-lg text-white font-bold transition ${
+              activeTab === 'deep' ? 'bg-purple-600 hover:bg-purple-700' : 'bg-blue-600 hover:bg-blue-700'
+            } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            {loading ? 'Scanning...' : 'Find Emails'}
+          </button>
+        </div>
+
+        {/* --- ERROR MESSAGE --- */}
+        {error && (
+          <div className="p-4 mb-6 bg-red-50 text-red-600 rounded-lg border border-red-200">
+            ❌ {error}
           </div>
+        )}
 
-          {status && <p className="mb-4 text-center text-sm text-yellow-400 animate-pulse">{status}</p>}
-
-          {leads.length > 0 && (
-            <div className="bg-gray-900 rounded-xl border border-gray-700 overflow-hidden">
-              {leads.map((lead, index) => (
-                <div key={index} className="p-4 border-b border-gray-800 last:border-0 flex justify-between items-center hover:bg-gray-800/50">
-                  <div className="flex flex-col">
-                    <span className="font-mono text-white text-base">{lead.email}</span>
-                    <span className="text-xs text-gray-500">{lead.source}</span>
-                  </div>
-                  <span className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 border border-gray-600">
-                    {lead.confidence}
-                  </span>
-                </div>
-              ))}
+        {/* --- RESULTS DISPLAY --- */}
+        {results && (
+          <div className="space-y-6 animate-fade-in">
+            {/* 1. EMAILS FOUND */}
+            <div className="bg-green-50 p-4 rounded-lg border border-green-200">
+              <h3 className="text-green-800 font-bold mb-2 flex items-center">
+                ✅ Found {results.emails.length} Emails
+              </h3>
+              {results.emails.length > 0 ? (
+                <ul className="space-y-2">
+                  {results.emails.map((email, i) => (
+                    <li key={i} className="flex justify-between items-center bg-white p-2 rounded border border-green-100">
+                      <span className="font-mono text-gray-700">{email}</span>
+                      <button 
+                        onClick={() => navigator.clipboard.writeText(email)}
+                        className="text-xs text-blue-500 hover:underline"
+                      >
+                        Copy
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-gray-500 italic">No direct emails found on this pass.</p>
+              )}
             </div>
-          )}
-        </div>
-      )}
 
-      {/* BULK TAB (Locked) */}
-      {activeTab === 'bulk' && (
-        <div className="w-full max-w-2xl bg-gray-800 p-12 rounded-2xl text-center border border-purple-500/30">
-          <h2 className="text-3xl font-bold mb-4">Bulk Engine ⚡</h2>
-          <p className="text-gray-400 mb-8">Process 500 URLs at once.</p>
-          <button className="bg-purple-600 px-8 py-4 rounded-xl font-bold text-lg">Get Pro ($29/mo)</button>
-        </div>
-      )}
+            {/* 2. VERIFIED SOURCES (Only for Deep Search) */}
+            {results.related_links && (
+              <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                <h3 className="text-gray-700 font-bold mb-2 text-sm uppercase tracking-wide">
+                  Verified Sources (Google)
+                </h3>
+                <ul className="space-y-2 text-sm">
+                  {results.related_links.map((link, i) => (
+                    <li key={i}>
+                      <a href={link.link} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate block">
+                        🔗 {link.title}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
